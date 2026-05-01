@@ -9,8 +9,8 @@ import hospitalsRouter from './routes/hospitals';
 import donationCampsRouter from './routes/donationCamps';
 import screeningRouter from './routes/screening';
 import adminRouter from './routes/admin';
-import pool from './db';
 import jwt from 'jsonwebtoken';
+import { logUserActivity } from './mongo';
 
 const app = express();
 
@@ -48,12 +48,11 @@ app.get('/api/health', (_req, res) => {
 });
 
 // ─── Visit tracking middleware ────────────────────────────────────────────────
-// Tracks every request to /api/* (excluding health + visits endpoints themselves)
 app.use('/api', (req, _res, next) => {
   const skip = ['/health', '/visits', '/stats'];
   if (skip.some(s => req.path.startsWith(s))) { next(); return; }
 
-  // Optionally extract donor_id from JWT if present
+  // Extract donor_id from JWT if present
   let donorId: string | null = null;
   const auth = req.headers.authorization;
   if (auth?.startsWith('Bearer ')) {
@@ -68,42 +67,15 @@ app.use('/api', (req, _res, next) => {
   const userAgent = req.headers['user-agent'] || null;
   const path = req.path;
 
-  pool.query(
-    'INSERT INTO page_visits (path, ip_address, user_agent, donor_id) VALUES ($1, $2, $3, $4)',
-    [path, ip, userAgent, donorId]
-  ).catch(err => console.error('Visit tracking error:', err));
+  // Log to MongoDB
+  logUserActivity({
+    event: 'api_visit',
+    email: 'anonymous',
+    donor_id: donorId || undefined,
+    ip_address: ip || undefined
+  }).catch(err => console.error('Visit tracking error:', err));
 
   next();
-});
-
-// ─── Visit stats endpoint ─────────────────────────────────────────────────────
-app.get('/api/visits', async (_req, res) => {
-  try {
-    const [total, today, byPath, daily] = await Promise.all([
-      pool.query('SELECT COUNT(*) FROM page_visits'),
-      pool.query("SELECT COUNT(*) FROM page_visits WHERE visited_at >= CURRENT_DATE"),
-      pool.query(`
-        SELECT path, COUNT(*) AS visits
-        FROM page_visits
-        GROUP BY path ORDER BY visits DESC LIMIT 10
-      `),
-      pool.query(`
-        SELECT DATE(visited_at) AS date, COUNT(*) AS visits
-        FROM page_visits
-        WHERE visited_at >= NOW() - INTERVAL '30 days'
-        GROUP BY DATE(visited_at) ORDER BY date ASC
-      `),
-    ]);
-    res.json({
-      totalVisits: parseInt(total.rows[0].count, 10),
-      todayVisits: parseInt(today.rows[0].count, 10),
-      topPaths: byPath.rows,
-      dailyVisits: daily.rows,
-    });
-  } catch (err) {
-    console.error('Visit stats error:', err);
-    res.status(500).json({ error: 'Failed to fetch visit stats' });
-  }
 });
 
 // Donor routes
@@ -113,7 +85,6 @@ app.use('/api/donors', donorsRouter);
 app.use('/api/donations', donationsRouter);
 
 // Donor donation history & next-eligible-date routes
-// mergeParams: true is set on the donorDonationsRouter itself so :id is accessible
 app.use('/api/donors/:id/donations', donorDonationsRouter);
 
 // Blood bank routes
@@ -125,7 +96,7 @@ app.use('/api/hospitals', hospitalsRouter);
 // Donation camps routes
 app.use('/api/donation-camps', donationCampsRouter);
 
-// Screening routes (authenticated: /api/donors/:id/screening, /api/donors/:id/eligibility)
+// Screening routes
 app.use('/api/donors', screeningRouter);
 
 // Admin routes
@@ -134,20 +105,49 @@ app.use('/api/admin', adminRouter);
 // Stats endpoint for home page
 app.get('/api/stats', async (_req, res) => {
   try {
+    const { Donor, DonationRecord, BloodBank, DonationCamp } = await import('./mongo');
+    
     const [donors, donations, banks, camps] = await Promise.all([
-      pool.query('SELECT COUNT(*) FROM donors'),
-      pool.query('SELECT COUNT(*) FROM donation_records'),
-      pool.query('SELECT COUNT(*) FROM blood_banks'),
-      pool.query("SELECT COUNT(*) FROM donation_camps WHERE camp_date >= CURRENT_DATE"),
+      Donor.countDocuments(),
+      DonationRecord.countDocuments(),
+      BloodBank.countDocuments(),
+      DonationCamp.countDocuments({ camp_date: { $gte: new Date() } })
     ]);
+    
     res.json({
-      totalDonors: parseInt(donors.rows[0].count, 10),
-      totalDonations: parseInt(donations.rows[0].count, 10),
-      totalBloodBanks: parseInt(banks.rows[0].count, 10),
-      totalCamps: parseInt(camps.rows[0].count, 10),
+      totalDonors: donors,
+      totalDonations: donations,
+      totalBloodBanks: banks,
+      totalCamps: camps,
     });
-  } catch {
+  } catch (err) {
+    console.error('Stats error:', err);
     res.json({ totalDonors: 0, totalDonations: 0, totalBloodBanks: 0, totalCamps: 0 });
+  }
+});
+
+// Visits endpoint
+app.get('/api/visits', async (_req, res) => {
+  try {
+    const { UserActivity } = await import('./mongo');
+    
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const [total, todayVisits] = await Promise.all([
+      UserActivity.countDocuments(),
+      UserActivity.countDocuments({ timestamp: { $gte: today } })
+    ]);
+    
+    res.json({
+      totalVisits: total,
+      todayVisits: todayVisits,
+      topPaths: [],
+      dailyVisits: []
+    });
+  } catch (err) {
+    console.error('Visit stats error:', err);
+    res.status(500).json({ error: 'Failed to fetch visit stats' });
   }
 });
 

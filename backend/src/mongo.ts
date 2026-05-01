@@ -1,9 +1,17 @@
 import mongoose from 'mongoose';
 
-// ─── Schemas ──────────────────────────────────────────────────────────────────
+// ─── Export Models ────────────────────────────────────────────────────────────
+export { Donor } from './models/Donor';
+export { BloodBank } from './models/BloodBank';
+export { Hospital } from './models/Hospital';
+export { DonationCamp } from './models/DonationCamp';
+export { DonationRecord } from './models/DonationRecord';
+export { ScreeningHistory } from './models/ScreeningHistory';
+export { Admin } from './models/Admin';
 
+// ─── User Activity Schema (for logging) ──────────────────────────────────────
 const userActivitySchema = new mongoose.Schema({
-  event: { type: String, required: true }, // 'register' | 'login' | 'google_login'
+  event: { type: String, required: true },
   donor_id: String,
   full_name: String,
   email: { type: String, required: true },
@@ -17,7 +25,6 @@ const userActivitySchema = new mongoose.Schema({
 export const UserActivity = mongoose.model('UserActivity', userActivitySchema);
 
 // ─── Connect ──────────────────────────────────────────────────────────────────
-
 export async function connectMongo(): Promise<void> {
   const url = process.env.MONGODB_URL;
   if (!url) {
@@ -29,12 +36,11 @@ export async function connectMongo(): Promise<void> {
     console.log('[MongoDB] Connected to', url);
   } catch (err) {
     console.error('[MongoDB] Connection failed:', err);
-    // Non-fatal — app continues without MongoDB
+    throw err; // Throw error since MongoDB is now the primary database
   }
 }
 
 // ─── Log helpers ─────────────────────────────────────────────────────────────
-
 export async function logUserActivity(data: {
   event: string;
   donor_id?: string;
